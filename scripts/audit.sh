@@ -42,5 +42,18 @@ else
   web_access="files=${writable},key=${keymode}"
 fi
 check "Нет файлов с правом записи для всех, ключ имеет права 600" "ok" "$web_access"
+echo "[5] Контейнеризация"
+check "Служба docker активна" "active" "$(systemctl is-active docker)"
+dbhealth="$(docker inspect -f '{{.State.Health.Status}}' app-db-1 2>/dev/null || echo missing)"
+check "Контейнер СУБД в состоянии healthy" "healthy" "$dbhealth"
+bad_ports="$(sudo ss -tlnH | awk '$4 ~ /:(5000|5432)$/ && $4 !~ /^127\.0\.0\.1:/ { print $4 }' | tr '\n' ' ' | sed 's/ *$//')"
+if [[ -z "$bad_ports" ]]; then
+  ports_result="ok"
+else
+  ports_result="$bad_ports"
+fi
+check "Порты 5000 и 5432 не слушаются нигде, кроме 127.0.0.1" "ok" "$ports_result"
+envmode="$(stat -c '%a' /home/devops/app/.env 2>/dev/null || echo missing)"
+check "Права файла ~/app/.env равны 600" "600" "$envmode"
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
