@@ -140,6 +140,7 @@ sudo ufw logging medium
 Межсетевой экран и полное имя узла настроены после снимка `03-ssh-hardened`.
 
 - `04-nginx-https` — после установки Nginx, выпуска самоподписанного сертификата и включения HTTPS
+- `05-docker-compose` — 13.11.2026 21:32, приложение и PostgreSQL в Docker Compose. Снимок сделан до публикации приложения через Nginx
 
 ## 8. Веб-сервер
 
@@ -163,3 +164,29 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 Порт 80 отвечает `301` и заголовком `Location: https://devops.local/...`. Порт 443 отдаёт ресурс. Заголовок HSTS не используется. Проверка конфигурации перед перезагрузкой: `sudo nginx -t`, затем `sudo systemctl reload nginx`, не `restart`.
+
+В блоке HTTPS есть расположение для контейнера. Косая черта в конце `proxy_pass` убирает префикс `/app/`: запрос `/app/health` уходит приложению как `/health`. Статический каталог `/var/www/devops-site` при этом сохраняется.
+
+```nginx
+location /app/ {
+    proxy_pass http://127.0.0.1:5000/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+## 9. Контейнеризация
+
+Docker Engine установлен из официального репозитория Docker, не из пакета `docker.io`. Версия Engine `29.9.3`, плагин Compose `v5.7.1`. Ключ лежит в `/etc/apt/keyrings/docker.asc`, источник пакетов — `/etc/apt/sources.list.d/docker.sources` для Ubuntu `noble`, компонент `stable`. Установлены пакеты `docker-ce`, `docker-ce-cli`, `containerd.io`, `docker-buildx-plugin` и `docker-compose-plugin`. Служба `docker` включена и активна.
+
+В группе `docker` состоит пользователь `devops`. Другие учётные записи в эту группу не добавлялись: член группы может запустить контейнер с корнем диска машины и тем самым получить права root.
+
+Проект на сервере: `/home/devops/app`. Образ приложения `devops-app:1.0` собирается из `Dockerfile` этого каталога и работает от пользователя `app`, не от root. Рядом описан сервис PostgreSQL `postgres:16-alpine`. Файл секретов `/home/devops/app/.env` создан только на сервере, права `600`. В репозитории есть только шаблон `app/.env.example` с заглушкой пароля. При доставке `rsync` файл `.env` исключается, иначе `--delete` удалил бы его.
+
+Сеть проекта `app_backend`, тип bridge. Приложение обращается к СУБД по имени `db`. Том `app_db_data` подключён к `/var/lib/postgresql/data` и не удаляется командой `docker compose down`. Команда `docker compose down -v` удаляет том вместе с данными.
+
+Порт приложения опубликован только на `127.0.0.1:5000`. Порт `5432` на сервере не публикуется. Публикация на `0.0.0.0` обходит правила UFW, потому что Docker добавляет DNAT в цепочку `iptables` раньше фильтра UFW. Привязка к `127.0.0.1` оставляет порт доступным только для Nginx на этой же машине.
+
+Nginx принимает `https://devops.local/app/` и передаёт запрос на `http://127.0.0.1:5000/`. Если контейнер приложения остановлен, Nginx отвечает `502` и пишет в `/var/log/nginx/devops-site.error.log` строку `connect() failed (111: Connection refused) while connecting to upstream`.
